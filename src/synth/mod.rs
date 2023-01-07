@@ -42,6 +42,14 @@ impl Default for Synth {
 
 impl Synth {
     pub fn generate_audio(&mut self, sample_rate: f32, buffer: &mut AudioBuffer<f32>) {
+
+        let n = buffer.samples();
+        let mut output = buffer.split().1;
+        for i in 0..n {
+            output[0][i] = 0.0;
+            output[1][i] = 0.0;
+        }
+
         for voice in self.voices.iter_mut().filter(|v| v.is_playing()) {
             voice.generate(&mut self.states, sample_rate, buffer);
         }
