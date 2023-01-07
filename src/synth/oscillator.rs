@@ -1,3 +1,5 @@
+use rand::Rng;
+
 use crate::synth::blep::{BLEPDATA, BLEPLEN, KTABLE};
 use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
@@ -52,7 +54,7 @@ impl Display for WaveForm {
 impl Oscillator {
     pub fn new() -> Self {
         Oscillator {
-            phase: 0.0,
+            phase: rand::thread_rng().gen(),
             buffer: [0.0f32; BLEPLEN / KTABLE],
             i_buffer: 0,
             n_init: 0,
