@@ -64,7 +64,7 @@ impl Plugin for SynthPlugin {
             vendor: "Anders Forsgren".to_string(),
             unique_id: 113300461,
             version: 0100,
-            inputs: 2,
+            inputs: 0,
             outputs: 2,
             parameters: synth::PARAMS.len() as i32,
             category: Category::Synth,
