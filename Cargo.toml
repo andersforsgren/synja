@@ -1,32 +1,19 @@
 [package]
 name = "synja"
 version = "0.1.0"
-authors = ["andersforsgren <anders.forsgren@gmail.com>"]
+authors = ["Anders Forsgren <anders.forsgren@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-dirs = "4.0.0"
-vst = "0.2.1"
-log = "0.4.11"
-simplelog = "0.12"
-log-panics = "2.0.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-num = "0.4"
+
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+rand_pcg = "0.3.1"
 rand = "0.8.5"
-chrono = "0.4.23"
 time = "0.3.15"
-strum = "0.24.1"
-num-derive = "0.3"
 num-traits = "0.2"
-baseview = { git = "https://github.com/RustAudio/baseview", rev = "eae4033e7d2cc9c31ccaa2794d5d08eedf2f510c" }
-egui = "0.20.1"
-egui_extras = "0.20.0"
-raw-window-handle = "0.4.2"
-# Fork with egui dependency 0.20.1
-egui-baseview = { git = "https://github.com/andersforsgren/egui-baseview", rev = "31864748329d7406b2c8b6d505b754ad6ff36c08" }
-# Fork with drag_length added to AudioKnob
-egui_extras_xt = { git = "https://github.com/andersforsgren/egui_extras_xt", rev="0159f1205dcb5d06765c50f2b1f65f20d151506f", features = ["knobs", "displays", "ui"] }
+egui_extras = "0.19.0"
+egui_extras_xt = { git = "https://github.com/andersforsgren/egui_extras_xt", rev="aa4fd91941419393e5648389958caa4bbaca0eb1", features = ["knobs", "displays", "ui"] }
 
 [lib]
 crate-type = ["cdylib"]

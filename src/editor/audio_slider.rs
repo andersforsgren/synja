@@ -1,4 +1,4 @@
-use egui::*;
+use nih_plug_egui::egui::*;
 use std::ops::RangeInclusive;
 
 /// Combined into one function (rather than two) to make it easier

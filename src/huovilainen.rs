@@ -1,4 +1,4 @@
-use crate::synth::filter::*;
+use crate::filter::*;
 use num_traits::clamp;
 use std::f64::consts::PI;
 

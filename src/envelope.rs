@@ -20,7 +20,7 @@ pub struct Adsr {
 #[derive(Debug)]
 pub struct AdsrEnvelope {
     #[allow(dead_code)]
-    voice_id: usize,
+    voice_id: i32,
     pub(crate) state: State,
     level: f32,
     start_time: Option<Instant>,
@@ -38,7 +38,7 @@ pub struct AdsrEnvelope {
 }
 
 impl AdsrEnvelope {
-    pub fn new(voice_id: usize) -> Self {
+    pub fn new(voice_id: i32) -> Self {
         AdsrEnvelope {
             voice_id,
             state: State::Idle,
@@ -70,10 +70,10 @@ impl AdsrEnvelope {
         sustain_level: f32,
         release_rate_seconds: f32,
     ) {
-        debug!(
-            "Envelope params: A={}s D={}s S={} R{}s",
-            attack_rate_seconds, decay_rate_seconds, sustain_level, release_rate_seconds
-        );
+        // debug!(
+        //     "Envelope params: A={}s D={}s S={} R{}s",
+        //     attack_rate_seconds, decay_rate_seconds, sustain_level, release_rate_seconds
+        // );
         self.params = Adsr {
             attack_rate: attack_rate_seconds,
             decay_rate: decay_rate_seconds,

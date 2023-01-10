@@ -1,8 +1,7 @@
 use rand::Rng;
 
-use crate::synth::blep::{BLEPDATA, BLEPLEN, KTABLE};
+use crate::blep::{BLEPDATA, BLEPLEN, KTABLE};
 use std::f64::consts::PI;
-use std::fmt::{Display, Formatter};
 
 pub struct Oscillator {
     buffer: [f32; BLEPLEN / KTABLE],
@@ -24,31 +23,6 @@ pub enum WaveForm {
     UnipolarSquare,
     /// LFO: Bipolar non-antialiased square
     Triangle,
-}
-
-impl From<i32> for WaveForm {
-    fn from(n: i32) -> Self {
-        match n {
-            0 => WaveForm::Saw,
-            1 => WaveForm::Square,
-            2 => WaveForm::Sine,
-            3 => WaveForm::UnipolarSquare,
-            4 => WaveForm::Triangle,
-            _ => panic!("Unknown waveform {}", n),
-        }
-    }
-}
-
-impl Display for WaveForm {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WaveForm::Saw => write!(f, "Saw"),
-            WaveForm::Square => write!(f, "Square"),
-            WaveForm::Sine => write!(f, "Sine"),
-            WaveForm::UnipolarSquare => write!(f, "Square"),
-            WaveForm::Triangle => write!(f, "Triangle"),
-        }
-    }
 }
 
 impl Oscillator {

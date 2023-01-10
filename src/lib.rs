@@ -1,392 +1,510 @@
-#![allow(unused_qualifications)]
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate num_derive;
-
+mod blep;
 mod editor;
-mod synth;
+mod envelope;
+mod filter;
+mod huovilainen;
+mod midi;
+mod oscillator;
+mod voice;
+use editor::{create_editor, frame_history::FrameHistory, SynthUiState};
+use nih_plug::prelude::*;
+use nih_plug_egui::{create_egui_editor, EguiState};
+use oscillator::WaveForm;
+use rand_pcg::Pcg32;
+use std::{
+    borrow::BorrowMut,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
+use voice::Voice;
 
-use crate::editor::SynthEditor;
-use crate::synth::*;
-use log::LevelFilter;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-use vst::api::{Supported, TimeInfoFlags};
-use vst::buffer::AudioBuffer;
-use vst::editor::Editor;
-use vst::event::{Event, MidiEvent};
-use vst::host::Host;
-use vst::plugin::{CanDo, Category, HostCallback, Info, Plugin, PluginParameters};
-use vst::util::ParameterTransfer;
+const NUM_VOICES: u32 = 16;
+const MAX_BLOCK_SIZE: usize = 64;
 
-const DEFAULT_PRESET_JSON: &str = include_str!("default_presets.json");
+#[derive(Default)]
+pub enum EditText {
+    #[default]
+    None,
+    Editing(String, u64),
+}
 
-const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PRODUCT_NAME: &str = "synja";
-
-static INSTANCE_ID: AtomicUsize = AtomicUsize::new(0);
-
-struct SynthPlugin {
-    #[allow(dead_code)]
-    id: usize,
-    sample_rate: f32,
+struct Synth {
+    params: Arc<SynthParams>,
+    prng: Pcg32,
+    voices: Vec<Voice>,
     time: f64,
-    events_buffer: Vec<MidiEvent>,
-    params: Arc<SynthParameters>,
-    synth: Arc<Mutex<Synth>>,
-    editor: Option<SynthEditor>,
+    ui_state: Arc<SynthUiState>,
 }
 
-pub struct SynthParameters {
-    #[allow(dead_code)]
-    host: HostCallback,
-    transfer: ParameterTransfer,
-    editing_parameter: AtomicI32,
-    edit_end_time: AtomicU64,
-    preset_index: AtomicI32,
-    preset_bank: Arc<Mutex<SynthPresetBank>>,
+#[derive(Clone, Copy, PartialEq, Enum)]
+pub enum WaveFormParameter {
+    /// Bi-polar antialiased positive ramp saw
+    Saw,
+    /// Bi-polar antialiased square wave, variable pulse width
+    Square,
+    /// Sine waveform
+    Sine,
 }
 
-impl Default for SynthPlugin {
+#[derive(Clone, Copy, PartialEq, Enum)]
+pub enum LfoWaveFormParameter {
+    /// Sine waveform
+    Sine,
+    /// LFO: Unipolar non-antialiased square, fixed 50% pulse width
+    Square,
+    /// LFO: Bipolar non-antialiased square
+    Triangle,
+}
+
+impl Into<WaveForm> for WaveFormParameter {
+    fn into(self) -> WaveForm {
+        match self {
+            WaveFormParameter::Saw => WaveForm::Saw,
+            WaveFormParameter::Square => WaveForm::Square,
+            WaveFormParameter::Sine => WaveForm::Sine,
+        }
+    }
+}
+
+impl Into<WaveForm> for LfoWaveFormParameter {
+    fn into(self) -> WaveForm {
+        match self {
+            LfoWaveFormParameter::Triangle => WaveForm::Triangle,
+            LfoWaveFormParameter::Square => WaveForm::UnipolarSquare,
+            LfoWaveFormParameter::Sine => WaveForm::Sine,
+        }
+    }
+}
+
+#[derive(Params)]
+pub struct SynthParams {
+    #[persist = "editor-state"]
+    editor_state: Arc<EguiState>,
+
+    // Filter
+    #[id = "FilterCutoff"]
+    filter_cutoff: FloatParam,
+    #[id = "FilterResonance"]
+    fiter_resonance: FloatParam,
+    #[id = "FilterEnvModGain"]
+    filter_env_mod_gain: FloatParam,
+    #[id = "FilterKeyTrack"]
+    filter_key_track: FloatParam,
+    #[id = "FilterVelocityMod"]
+    filter_velocity_mod: FloatParam,
+
+    // Amp Envelope
+    #[id = "AmpEnvAttack"]
+    amp_env_attack: FloatParam,
+    #[id = "AmpEnvDecay"]
+    amp_env_decay: FloatParam,
+    #[id = "AmpEnvSustain"]
+    amp_env_sustain: FloatParam,
+    #[id = "AmpEnvRelease"]
+    amp_env_release: FloatParam,
+
+    // Filter envelope
+    #[id = "FilterEnvAttack"]
+    filter_env_attack: FloatParam,
+    #[id = "FilterEnvDecay"]
+    filter_env_decay: FloatParam,
+    #[id = "FilterEnvSustain"]
+    filter_env_sustain: FloatParam,
+    #[id = "FilterEnvRelease"]
+    filter_env_release: FloatParam,
+
+    // OSC1
+    #[id = "Osc1Level"]
+    osc1_level: FloatParam,
+    #[id = "Osc1Octave"]
+    osc1_octave: IntParam,
+    #[id = "Osc1Detune"]
+    osc1_detune: FloatParam,
+    #[id = "Osc1WaveForm"]
+    osc1_waveform: EnumParam<WaveFormParameter>,
+    #[id = "Osc1PulseWidth"]
+    osc1_pulsewidth: FloatParam,
+
+    // OSC1
+    #[id = "Osc2Level"]
+    osc2_level: FloatParam,
+    #[id = "Osc2Octave"]
+    osc2_octave: IntParam,
+    #[id = "Osc2Detune"]
+    osc2_detune: FloatParam,
+    #[id = "Osc2WaveForm"]
+    osc2_waveform: EnumParam<WaveFormParameter>,
+    #[id = "Osc2PulseWidth"]
+    osc2_pulsewidth: FloatParam,
+
+    // LFO
+    #[id = "LfoHostSync"]
+    lfo_host_sync: BoolParam,
+    #[id = "LfoKeyTrig"]
+    lfo_key_trig: BoolParam,
+    #[id = "LfoFreq"]
+    lfo_freq: FloatParam,
+    #[id = "LfoWaveform"]
+    lfo_waveform: EnumParam<LfoWaveFormParameter>,
+    #[id = "LfoFilterModDepth"]
+    lfo_filter_mod_depth: FloatParam,
+    #[id = "LfoOsc1DetuneModDepth"]
+    lfo_osc1_detune_mod_depth: FloatParam,
+
+    #[id = "MasterGain"]
+    master_gain: FloatParam,
+
+    #[id = "UnisonVoices"]
+    unison_voices: IntParam,
+    #[id = "UnisonDetune"]
+    unison_detune: FloatParam,
+    #[id = "UnisonStereoSpread"]
+    unison_stereo_spread: FloatParam,
+
+    #[id = "PolyMode"]
+    poly_mode: BoolParam,
+    #[id = "Portamento"]
+    portamento: FloatParam,
+}
+
+impl Default for Synth {
     fn default() -> Self {
-        let host = HostCallback::default();
-        Self::new(host)
+        Self {
+            params: Arc::new(SynthParams::default()),
+            time: 0.0,
+            prng: create_rng(),
+            voices: (0..NUM_VOICES).map(|i| Voice::new(i as i32)).collect(),
+            ui_state: Arc::new(SynthUiState {
+                edit_text: Mutex::new(EditText::None),
+                frame_history: Mutex::new(FrameHistory::default()),
+            }),
+        }
     }
 }
 
-impl Plugin for SynthPlugin {
-    fn get_info(&self) -> Info {
-        debug!("Get info");
-        Info {
-            name: "Synja".to_string(),
-            vendor: "Anders Forsgren".to_string(),
-            unique_id: 113300461,
-            version: 0100,
-            inputs: 0,
-            outputs: 2,
-            parameters: synth::PARAMS.len() as i32,
-            category: Category::Synth,
-            midi_outputs: 0,
-            midi_inputs: 1,
-            presets: 1,
-            preset_chunks: true,
-            ..Default::default()
+fn create_rng() -> Pcg32 {
+    Pcg32::new(111, 333)
+}
+
+impl Default for SynthParams {
+    fn default() -> Self {
+        Self {
+            editor_state: editor::default_editor_state(),
+
+            filter_cutoff: freq_param("Filter Cutoff", 4000.0),
+            master_gain: gain_param("Master", -6.0),
+            amp_env_attack: env_time_param("Amp Attack"),
+            amp_env_decay: env_time_param("Amp Decay"),
+            amp_env_release: env_time_param("Amp Release"),
+            amp_env_sustain: gain_param("Amp Sustain", 0.0),
+            filter_env_attack: env_time_param("Filter Attack"),
+            filter_env_decay: env_time_param("Filter Decay"),
+            filter_env_release: env_time_param("Filter Release"),
+            filter_env_sustain: gain_param("Filter Sustain", 0.0),
+            fiter_resonance: percentage_param("Filter Resonance", 0.1),
+            filter_env_mod_gain: symmetric_percentage_param("Filter env mod"),
+            filter_key_track: percentage_param("Key track", 0.1),
+            filter_velocity_mod: percentage_param("Filter Vel", 0.1),
+            osc1_level: gain_param("Osc1 Level", 0.0),
+            osc1_octave: IntParam::new("Osc1 Octave", 0, IntRange::Linear { min: -2, max: 2 }),
+            osc1_detune: fine_detune_param("Osc1 Detune"),
+            osc1_waveform: EnumParam::new("Osc1 Waveform", WaveFormParameter::Saw),
+            osc1_pulsewidth: percentage_param("Osc1 PW", 0.5),
+            osc2_level: gain_param("Osc2 Level", 0.0),
+            osc2_octave: IntParam::new("Osc2 Octave", 0, IntRange::Linear { min: -2, max: 2 }),
+            osc2_detune: fine_detune_param("Osc2 Detune"),
+            osc2_waveform: EnumParam::new("Osc2 Waveform", WaveFormParameter::Saw),
+            osc2_pulsewidth: percentage_param("Osc2 PW", 0.5),
+            lfo_host_sync: BoolParam::new("Sync", false),
+            lfo_key_trig: BoolParam::new("Trig", true),
+            lfo_freq: FloatParam::new(
+                "LFO Freq",
+                2.0,
+                FloatRange::Linear {
+                    min: 0.01,
+                    max: 20.0,
+                },
+            )
+            .with_unit("Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
+            lfo_waveform: EnumParam::new("LFO Waveform", LfoWaveFormParameter::Sine),
+            lfo_filter_mod_depth: symmetric_percentage_param("LFO Filter Mod Depth"),
+            lfo_osc1_detune_mod_depth: symmetric_percentage_param("LFO OSC1 Detune Mod Depth"),
+            unison_voices: IntParam::new("Unison Voices", 1, IntRange::Linear { min: 1, max: 7 }),
+            unison_detune: FloatParam::new(
+                "Unison Detune",
+                0.0,
+                FloatRange::Skewed {
+                    min: 0.0,
+                    max: 2.0,
+                    factor: 1.0,
+                },
+            ),
+            unison_stereo_spread: percentage_param("Unison Stereo Spread", 0.5),
+            poly_mode: BoolParam::new("Poly", true),
+            portamento: FloatParam::new(
+                "Portamento",
+                0.2,
+                FloatRange::Skewed {
+                    min: 1.0,
+                    max: 3000.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_step_size(0.01)
+            .with_unit("ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
         }
     }
+}
 
-    fn new(host: HostCallback) -> SynthPlugin {
-        let id = INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
-        if id == 0 {
-            let now = chrono::Utc::now();
-            let date_string = now.format("%Y-%m-%d-%H-%M-%S%.6f");
-            let log_filename = format!("{}-{}.log", PRODUCT_NAME, date_string);
-            let log_folder = dirs::data_local_dir().unwrap().join(PRODUCT_NAME);
-            let _ = std::fs::create_dir(log_folder.clone());
-            let log_file = std::fs::File::create(log_folder.join(log_filename)).unwrap();
-            let mut bld = simplelog::ConfigBuilder::default();
-            let time_format =
-                time::macros::format_description!("[hour]:[minute]:[second].[subsecond]");
-            bld.set_time_format_custom(time_format);
-            let log_config = bld.build();
-            match simplelog::CombinedLogger::init(vec![simplelog::WriteLogger::new(
-                LevelFilter::Info,
-                log_config,
-                log_file,
-            )]) {
-                Err(_) => debug!("Failed to initialize logging"),
-                _ => {}
-            }
-        }
+fn percentage_param(name: impl Into<String>, default: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
+        .with_step_size(0.01)
+        .with_unit("%")
+        .with_value_to_string(formatters::v2s_f32_percentage(1))
+}
 
-        let default_presets = SynthPresetBank::from_serialized(
-            serde_json::from_str::<SerializedSynthPresetBank>(DEFAULT_PRESET_JSON).unwrap(),
-        );
+fn symmetric_percentage_param(name: impl Into<String>) -> FloatParam {
+    FloatParam::new(name, 0.0, FloatRange::Linear { min: -1.0, max: 1.0 })
+        .with_step_size(0.01)
+        .with_unit("%")
+        .with_value_to_string(formatters::v2s_f32_percentage(1))
+}
 
-        let params = Arc::new(SynthParameters {
-            host,
-            transfer: ParameterTransfer::new(PARAMS.len()),
-            editing_parameter: AtomicI32::new(-1),
-            edit_end_time: AtomicU64::new(0),
-            preset_index: AtomicI32::new(0),
-            preset_bank: Arc::new(Mutex::new(default_presets)),
-        });
+fn env_time_param(name: impl Into<String>) -> FloatParam {
+    FloatParam::new(
+        name,
+        0.2,
+        FloatRange::Skewed {
+            min: 0.001,
+            max: 20.0,
+            factor: FloatRange::skew_factor(-2.0),
+        },
+    )
+    .with_step_size(0.01)
+    .with_unit("s")
+    .with_value_to_string(formatters::v2s_f32_rounded(3))
+}
 
-        info!("Plugin started id={}", id);
-        SynthPlugin {
-            id: id,
-            sample_rate: 12345.0,
-            events_buffer: vec![],
-            time: 0.0,
-            params: params.clone(),
-            synth: Arc::new(Mutex::new(Synth::default())),
-            editor: Some(SynthEditor::new(params)),
-        }
+fn freq_param(name: impl Into<String>, default: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min: 20.0,
+            max: 20000.0,
+            factor: 0.5,
+        },
+    )
+    .with_unit("Hz")
+    .with_value_to_string(formatters::v2s_f32_rounded(0))
+}
+
+fn fine_detune_param(name: impl Into<String>) -> FloatParam {
+    FloatParam::new(
+        name,
+        0.0,
+        FloatRange::Linear { min: -1.0, max: 1.0 },
+    )
+    .with_step_size(0.01)
+    .with_unit("c")
+    .with_value_to_string(Arc::new(move |value| format!("{:.0}", value * 100.0)))
+}
+
+fn gain_param(name: impl Into<String>, default_dbs: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        util::db_to_gain(default_dbs),
+        // Because we're representing gain as decibels the range is already logarithmic
+        FloatRange::Linear {
+            min: util::db_to_gain(-36.0),
+            max: util::db_to_gain(0.0),
+        },
+    )
+    .with_unit("dB")
+    .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
+}
+
+impl Plugin for Synth {
+    const NAME: &'static str = "Synja";
+    const VENDOR: &'static str = "Anders Forsgren";
+    const URL: &'static str = "https://github.com/andersforsgren/synja";
+    const EMAIL: &'static str = "anders.forsgren@gmail.com";
+
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    const DEFAULT_INPUT_CHANNELS: u32 = 0;
+    const DEFAULT_OUTPUT_CHANNELS: u32 = 2;
+
+    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    const SAMPLE_ACCURATE_AUTOMATION: bool = true;
+
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
     }
 
-    fn init(&mut self) {
-        info!("Setting parameters to default!");
-        self.params.set_parameters_to_default();
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        create_editor(self.params.clone(), self.ui_state.clone())
     }
 
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.sample_rate = rate;
-        info!("Sample rate set to {}", rate);
+    // If the synth as a variable number of voices, you will need to call
+    // `context.set_current_voice_capacity()` in `initialize()` and in `process()` (when the
+    // capacity changes) to inform the host about this.
+    fn reset(&mut self) {
+        // This ensures the output is at least somewhat deterministic when rendering to audio
+        self.prng = create_rng();
+        self.voices = (0..NUM_VOICES).map(|i| Voice::new(i as i32)).collect();
     }
 
-    fn can_do(&self, can_do: CanDo) -> Supported {
-        match can_do {
-            CanDo::ReceiveMidiEvent => Supported::Yes,
-            _ => Supported::Maybe,
-        }
-    }
-
-    fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
         self.time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as f64;
 
-        self.events_buffer = vec![];
-        let mut synth = self.synth.lock().unwrap();
+        // NIH-plug has a block-splitting adapter for `Buffer`. While this works great for effect
+        // plugins, for polyphonic synths the block size should be `min(MAX_BLOCK_SIZE,
+        // num_remaining_samples, next_event_idx - block_start_idx)`. Because blocks also need to be
+        // split on note events, it's easier to work with raw audio here and to do the splitting by
+        // hand.
+        let num_samples = buffer.samples();
+        let sample_rate = context.transport().sample_rate;
+        let output = buffer.as_slice();
 
-        if let Some(time_info) = self
-            .params
-            .host
-            .get_time_info((TimeInfoFlags::TEMPO_VALID | TimeInfoFlags::PPQ_POS_VALID).bits())
-        {
-            if self.params.get_parameter(Param::LfoHostSync) > 0.5 && time_info.tempo > 0.0 {
-                let sync_resolution = 0.25; // 4/4
-                let frequency: f64 = time_info.tempo / 60.0 * sync_resolution;
-                self.params.set_parameter(Param::LfoFreq, frequency);
-                debug!(
-                    "Time info : tempo={:.2}  pos={:.2} lfo_freq_sync={:.?}Hz",
-                    time_info.tempo, time_info.ppq_pos, frequency
+        let mut next_event = context.next_event();
+        let mut block_start: usize = 0;
+        let mut block_end: usize = MAX_BLOCK_SIZE.min(num_samples);
+
+        while block_start < num_samples {
+            // First of all, handle all note events that happen at the start of the block, and cut
+            // the block short if another event happens before the end of it. To handle polyphonic
+            // modulation for new notes properly, we'll keep track of the next internal note index
+            // at the block's start. If we receive polyphonic modulation that matches a voice that
+            // has an internal note ID that's great than or equal to this one, then we should start
+            // the note's smoother at the new value instead of fading in from the global value.
+            //let this_sample_internal_voice_id_start = self.next_internal_voice_id;
+            'events: loop {
+                match next_event {
+                    // If the event happens now, then we'll keep processing events
+                    Some(event) if (event.timing() as usize) <= block_start => {
+                        match event {
+                            NoteEvent::NoteOn {
+                                timing: _,
+                                voice_id: _,
+                                channel: _,
+                                note,
+                                velocity,
+                            } => self.note_on(note, (velocity * 127.0) as u8, self.time),
+                            NoteEvent::NoteOff {
+                                timing: _,
+                                voice_id: _,
+                                channel: _,
+                                note,
+                                velocity: _,
+                            } => {
+                                self.note_off(note);
+                            }
+                            _ => (),
+                        };
+
+                        next_event = context.next_event();
+                    }
+                    // If the event happens before the end of the block, then the block should be cut
+                    // short so the next block starts at the event
+                    Some(event) if (event.timing() as usize) < block_end => {
+                        block_end = event.timing() as usize;
+                        break 'events;
+                    }
+                    _ => break 'events,
+                }
+            }
+
+            // Silence!
+            output[0][block_start..block_end].fill(0.0);
+            output[1][block_start..block_end].fill(0.0);
+
+            for voice in self.voices.iter_mut().filter(|v| v.is_playing()) {
+                voice.generate(
+                    self.params.borrow_mut(),
+                    sample_rate,
+                    output,
+                    block_start,
+                    block_end,
                 );
             }
+
+            // And then just keep processing blocks until we've run out of buffer to fill
+            block_start = block_end;
+            block_end = (block_start + MAX_BLOCK_SIZE).min(num_samples);
         }
 
-        for (p, value) in self.params.transfer.iterate(true) {
-            let param: Param = Param::from_index(p);
-            let v = param.get_config().map_to_ui(value);
-            synth.states[p].set(v as f32);
-        }
-        synth.generate_audio(self.sample_rate, buffer);
+        ProcessStatus::Normal
     }
+}
 
-    fn process_events(&mut self, events: &vst::api::Events) {
-        // https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
+impl Synth {
+    pub fn note_on(&mut self, note: u8, velocity: u8, time: f64) {
+        let unison = self.params.unison_voices.value() as usize;
+        let lfo_trig = self.params.lfo_key_trig.value();
+        let mut oldest_playing_voice: usize = 0;
+        let mut oldest_playing_time = f64::MAX;
+        let mut oldest_decaying_voice: Option<usize> = None;
+        let mut oldest_decaying_time = f64::MAX;
 
-        for e in events.events() {
-            if let Event::Midi(midi_event) = e {
-                debug!("Midi event {:?}", midi_event.data);
-
-                let hi = midi_event.data[0] & 0xF0;
-                match hi {
-                    // midi note off
-                    128 => {
-                        let mut syn = self.synth.lock().unwrap();
-                        syn.note_off(midi_event.data[1]);
+        let mono = false;
+        if mono {
+            // Mono: always trig voice 0
+            self.voices[0].note_on(note, velocity, time, unison, lfo_trig);
+        } else {
+            for i in 0..NUM_VOICES as usize {
+                if !self.voices[i].is_playing() {
+                    // Found an idle voice. Use that.
+                    self.voices[i].note_on(note, velocity, time, unison, lfo_trig);
+                    return;
+                } else {
+                    if self.voices[i].amp_envelope.is_decaying()
+                        && self.voices[i].start_time < oldest_decaying_time
+                    {
+                        oldest_decaying_voice = Some(i);
+                        oldest_decaying_time = self.voices[i].start_time;
                     }
-                    // midi note on
-                    144 => {
-                        let mut syn = self.synth.lock().unwrap();
-                        syn.note_on(midi_event.data[1], midi_event.data[2], self.time);
-                    }
-                    // pitch wheel
-                    224 => {
-                        let mut syn = self.synth.lock().unwrap();
-                        syn.pitch_bend(midi_event.data[1], midi_event.data[2]);
-                    }
-                    _ => {
-                        debug!("Unknown MIDI event {:?}", midi_event.data);
+                    if self.voices[i].start_time < oldest_playing_time {
+                        oldest_playing_voice = i;
+                        oldest_playing_time = self.voices[i].start_time;
                     }
                 }
             }
         }
-    }
 
-    fn get_parameter_object(&mut self) -> Arc<dyn PluginParameters> {
-        Arc::clone(&self.params) as Arc<dyn PluginParameters>
-    }
-
-    fn get_editor(&mut self) -> Option<Box<dyn Editor>> {
-        if let Some(editor) = self.editor.take() {
-            Some(Box::new(editor) as Box<dyn Editor>)
-        } else {
-            None
-        }
-    }
-}
-
-impl SynthParameters {
-    pub fn get_parameter(&self, parameter: Param) -> f32 {
-        self.transfer.get_parameter(parameter.index())
-    }
-
-    pub fn set_parameter(&self, parameter: Param, daw_value: f64) {
-        self.transfer
-            .set_parameter(parameter.index(), daw_value as f32)
-    }
-
-    pub fn set_parameter_to_default(&self, parameter: Param) {
-        let preset_index = self.preset_index.load(Ordering::Relaxed) as usize;
-        let value =
-            self.preset_bank.lock().unwrap().presets[preset_index].params[parameter.index()];
-        self.transfer.set_parameter(parameter.index(), value);
-    }
-
-    pub fn set_parameters_to_default(&self) {
-        for param in PARAMS {
-            self.set_parameter_to_default(param);
-            let index: i32 = param.iindex();
-            debug!(
-                "Param: {} ({})",
-                self.get_parameter_name(index),
-                self.get_parameter_text(index)
-            );
-            debug!("  range: {:?}", param.get_config().range);
-            debug!("  default: {}", param.get_config().default);
-            debug!(
-                "  default(daw): {}",
-                param.get_config().map_to_daw(param.get_config().default)
-            );
-        }
-    }
-
-    pub fn write_current_preset(&self) {
-        let cur_preset_index = self.preset_index.load(Ordering::Relaxed);
-        let preset_bank = &mut *(self.preset_bank.lock().expect("Could not lock preset bank"));
-        for p in 0..PARAMS.len() {
-            preset_bank.presets[cur_preset_index as usize].params[p] =
-                self.get_parameter(Param::from_index(p));
-        }
-    }
-}
-
-impl PluginParameters for SynthParameters {
-    fn change_preset(&self, index: i32) {
-        debug!("Change preset to {}", index);
-        let preset_bank = self.preset_bank.lock().unwrap();
-        let new_preset_index = (index as usize) % preset_bank.presets.len();
-        let preset: &SynthPreset =
-            &preset_bank.presets[(new_preset_index as usize) % preset_bank.presets.len()];
-        for p in 0..PARAMS.len() {
-            self.set_parameter(Param::from_index(p), preset.params[p] as f64);
-        }
-        self.preset_index
-            .store(new_preset_index as i32, Ordering::Relaxed);
-    }
-
-    /// Get the current preset index.
-    fn get_preset_num(&self) -> i32 {
-        self.preset_index.load(Ordering::Relaxed)
-    }
-
-    /// Set the current preset name.
-    fn set_preset_name(&self, name: String) {
-        let idx = self.preset_index.load(Ordering::Relaxed) as usize;
-        let mut preset_bank = self.preset_bank.lock().unwrap();
-        let preset = &(*preset_bank).presets[idx];
-        (*preset_bank).presets[idx] = SynthPreset {
-            name,
-            params: preset.params.clone(),
-        };
-    }
-
-    /// Get the name of the preset at the index specified by `preset`.
-    fn get_preset_name(&self, preset_index: i32) -> String {
-        let preset_bank = self.preset_bank.lock().unwrap();
-        (*preset_bank).presets[preset_index as usize]
-            .name
-            .to_string()
-    }
-
-    fn get_parameter_text(&self, index: i32) -> String {
-        let value = self.transfer.get_parameter(index as usize);
-        let config = PARAMS[index as usize].get_config();
-        let display_value = config.map_to_ui(value) as f32;
-        (config.daw_display)(display_value)
-    }
-
-    fn get_parameter_name(&self, index: i32) -> String {
-        PARAMS[index as usize].get_config().daw_name.to_string()
-    }
-
-    fn get_parameter(&self, index: i32) -> f32 {
-        self.transfer.get_parameter(index as usize)
-    }
-
-    fn can_be_automated(&self, index: i32) -> bool {
-        match PARAMS[index as usize].get_config().range {
-            ParameterRange::Discrete(_, _) => false,
-            _ => true,
-        }
-    }
-
-    fn set_parameter(&self, index: i32, val: f32) {
-        self.transfer.set_parameter(index as usize, val);
-    }
-
-    fn get_preset_data(&self) -> Vec<u8> {
-        debug!(
-            "Getting raw data for current preset {}",
-            self.preset_index.load(Ordering::Relaxed)
-        );
-        vec![]
-    }
-
-    fn get_bank_data(&self) -> Vec<u8> {
-        self.write_current_preset(); // NOTE: implicit write
-        debug!("Getting raw data for all presets");
-        let preset_bank = &*(self.preset_bank.lock().expect("Could not lock preset bank"));
-        let serializable_bank = preset_bank.to_serialized();
-        let serialized = serde_json::to_string_pretty(&serializable_bank).unwrap();
-        debug!("Serialized:\n{}", serialized);
-        serialized.as_bytes().into()
-    }
-
-    fn load_preset_data(&self, data: &[u8]) {
-        debug!(
-            "Deserializing preset data for current preset {} from array of len {}",
-            self.preset_index.load(Ordering::Relaxed),
-            data.len()
-        );
-    }
-
-    fn load_bank_data(&self, data: &[u8]) {
-        if let Ok(bank_data_result) = serde_json::from_slice::<SerializedSynthPresetBank>(data) {
-            debug!("Data format version: {}", bank_data_result.version);
-            let mut x = self
-                .preset_bank
-                .lock()
-                .expect("Could not lock synth preset bank");
-            if bank_data_result.presets.len() > 0 {
-                let bank_data = SynthPresetBank::from_serialized(bank_data_result);
-                *x = bank_data;
-                self.preset_index.store(0, Ordering::Relaxed);
-                debug!(
-                    "Loaded {} presets from {} bytes",
-                    x.presets.len(),
-                    data.len()
-                );
-                debug!(
-                    "Preset 0 name: {} waveform: {}",
-                    x.presets[0].name,
-                    x.presets[0].params[Param::Osc1WaveForm.index()]
-                );
-                debug!("Deserialized data:\n{}", std::str::from_utf8(data).unwrap());
-            } else {
-                debug!("Ignored empty bank");
+        // Steal the oldest decaying voice if one exists. Otherwise the oldest playing voice.
+        match oldest_decaying_voice {
+            Some(v) => self.voices[v].note_on(note, velocity, time, unison, lfo_trig),
+            None => {
+                self.voices[oldest_playing_voice].note_on(note, velocity, time, unison, lfo_trig)
             }
-        } else {
-            warn!(
-                "Could not deserialize bank data '{}'",
-                std::str::from_utf8(data).unwrap_or("Bad encoding in json")
-            );
+        }
+    }
+
+    pub fn note_off(&mut self, note: u8) {
+        for i in 0..NUM_VOICES as usize {
+            if self.voices[i].target_note == note {
+                self.voices[i].note_off();
+            }
         }
     }
 }
 
-vst::plugin_main!(SynthPlugin);
+impl Vst3Plugin for Synth {
+    const VST3_CLASS_ID: [u8; 16] = *b"Synja00000000000";
+    const VST3_CATEGORIES: &'static str = "Instrument|Synth";
+}
+
+nih_export_vst3!(Synth);
