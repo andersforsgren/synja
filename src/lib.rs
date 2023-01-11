@@ -13,7 +13,7 @@ use oscillator::WaveForm;
 use rand_pcg::Pcg32;
 use std::{
     borrow::BorrowMut,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicU16},
     time::SystemTime,
 };
 use voice::Voice;
@@ -34,6 +34,7 @@ struct Synth {
     voices: Vec<Voice>,
     time: f64,
     ui_state: Arc<SynthUiState>,
+    env_chg: Arc<AtomicU16>,
 }
 
 #[derive(Clone, Copy, PartialEq, Enum)]
@@ -168,12 +169,14 @@ pub struct SynthParams {
 }
 
 impl Default for Synth {
-    fn default() -> Self {
+    fn default() -> Self {        
+        let e = Arc::new(AtomicU16::new(0b1111_1111_1111_1111));
         Self {
-            params: Arc::new(SynthParams::default()),
+            params: Arc::new(SynthParams::new(e.clone())),
             time: 0.0,
             prng: create_rng(),
-            voices: (0..NUM_VOICES).map(|i| Voice::new(i as i32)).collect(),
+            env_chg: e.clone(),
+            voices: (0..NUM_VOICES).map(move |i| Voice::new(i as i32, 44100.0, &e.clone())).collect(),
             ui_state: Arc::new(SynthUiState {
                 edit_text: Mutex::new(EditText::None),
                 frame_history: Mutex::new(FrameHistory::default()),
@@ -186,21 +189,21 @@ fn create_rng() -> Pcg32 {
     Pcg32::new(111, 333)
 }
 
-impl Default for SynthParams {
-    fn default() -> Self {
+impl  SynthParams {
+    fn new(env_chg: Arc<AtomicU16>) -> Self {
         Self {
             editor_state: editor::default_editor_state(),
 
             filter_cutoff: freq_param("Filter Cutoff", 4000.0),
             master_gain: gain_param("Master", -6.0),
-            amp_env_attack: env_time_param("Amp Attack"),
-            amp_env_decay: env_time_param("Amp Decay"),
-            amp_env_release: env_time_param("Amp Release"),
-            amp_env_sustain: gain_param("Amp Sustain", 0.0),
-            filter_env_attack: env_time_param("Filter Attack"),
-            filter_env_decay: env_time_param("Filter Decay"),
-            filter_env_release: env_time_param("Filter Release"),
-            filter_env_sustain: gain_param("Filter Sustain", 0.0),
+            amp_env_attack: env_time_param("Amp Attack", env_chg.clone()),
+            amp_env_decay: env_time_param("Amp Decay", env_chg.clone()),
+            amp_env_release: env_time_param("Amp Release", env_chg.clone()),
+            amp_env_sustain: env_gain_param("Amp Sustain", env_chg.clone()),
+            filter_env_attack: env_time_param("Filter Attack", env_chg.clone()),
+            filter_env_decay: env_time_param("Filter Decay", env_chg.clone()),
+            filter_env_release: env_time_param("Filter Release", env_chg.clone()),
+            filter_env_sustain: env_gain_param("Filter Sustain", env_chg.clone()),
             fiter_resonance: percentage_param("Filter Resonance", 0.1),
             filter_env_mod_gain: symmetric_percentage_param("Filter env mod"),
             filter_key_track: percentage_param("Key track", 0.1),
@@ -272,7 +275,7 @@ fn symmetric_percentage_param(name: impl Into<String>) -> FloatParam {
         .with_value_to_string(formatters::v2s_f32_percentage(1))
 }
 
-fn env_time_param(name: impl Into<String>) -> FloatParam {
+fn env_time_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatParam {
     FloatParam::new(
         name,
         0.2,
@@ -285,6 +288,28 @@ fn env_time_param(name: impl Into<String>) -> FloatParam {
     .with_step_size(0.01)
     .with_unit("s")
     .with_value_to_string(formatters::v2s_f32_rounded(3))
+    .with_callback({
+        let env_chg = env_chg.clone();
+        Arc::new(move |_| env_chg.store(0xFFFF, std::sync::atomic::Ordering::Relaxed))
+    })
+}
+
+fn env_gain_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatParam {
+    FloatParam::new(
+        name,
+        util::db_to_gain(0.0),
+        // Because we're representing gain as decibels the range is already logarithmic
+        FloatRange::Linear {
+            min: util::db_to_gain(-100.0),
+            max: util::db_to_gain(0.0),
+        },
+    )
+    .with_unit("dB")
+    .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
+    .with_callback({
+        let env_chg = env_chg.clone();
+        Arc::new(move |_| env_chg.store(0xFFFF, std::sync::atomic::Ordering::Relaxed))
+    })
 }
 
 fn freq_param(name: impl Into<String>, default: f32) -> FloatParam {
@@ -318,7 +343,7 @@ fn gain_param(name: impl Into<String>, default_dbs: f32) -> FloatParam {
         util::db_to_gain(default_dbs),
         // Because we're representing gain as decibels the range is already logarithmic
         FloatRange::Linear {
-            min: util::db_to_gain(-36.0),
+            min: util::db_to_gain(-100.0),
             max: util::db_to_gain(0.0),
         },
     )
@@ -349,14 +374,20 @@ impl Plugin for Synth {
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         create_editor(self.params.clone(), self.ui_state.clone())
     }
+    
+    fn initialize(
+        &mut self,
+        _bus_config: &BusConfig,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {        
+        self.voices = (0..NUM_VOICES).map(|i| Voice::new(i as i32, buffer_config.sample_rate, &self.env_chg)).collect();
+        true
+    }
 
-    // If the synth as a variable number of voices, you will need to call
-    // `context.set_current_voice_capacity()` in `initialize()` and in `process()` (when the
-    // capacity changes) to inform the host about this.
     fn reset(&mut self) {
-        // This ensures the output is at least somewhat deterministic when rendering to audio
         self.prng = create_rng();
-        self.voices = (0..NUM_VOICES).map(|i| Voice::new(i as i32)).collect();
+        
     }
 
     fn process(
@@ -376,7 +407,7 @@ impl Plugin for Synth {
         // split on note events, it's easier to work with raw audio here and to do the splitting by
         // hand.
         let num_samples = buffer.samples();
-        let sample_rate = context.transport().sample_rate;
+        //let sample_rate = context.transport().sample_rate;
         let output = buffer.as_slice();
 
         let mut next_event = context.next_event();
@@ -434,7 +465,6 @@ impl Plugin for Synth {
             for voice in self.voices.iter_mut().filter(|v| v.is_playing()) {
                 voice.generate(
                     self.params.borrow_mut(),
-                    sample_rate,
                     output,
                     block_start,
                     block_end,

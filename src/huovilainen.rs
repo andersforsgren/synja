@@ -14,6 +14,8 @@ pub struct HuovilainenMoog {
     tune: f64,
     acr: f64,
     res_quad: f64,
+    coeff_cutoff: f32,
+    coeff_resonance: f32,
 }
 
 const THERMAL: f64 = 0.000025f64;
@@ -27,11 +29,19 @@ impl HuovilainenMoog {
             tune: 0.0,
             acr: 0.0,
             res_quad: 0.0,
+
+            coeff_cutoff: 0.0,
+            coeff_resonance: 0.0,
         }
     }
 
-    fn compute_coeffs(&mut self, cutoff: f64, resonance: f64, sample_rate: f32) {
-        let total_cutoff = clamp(cutoff, 0.0, sample_rate as f64 / 2.0);
+    fn compute_coeffs(&mut self, cutoff: f32, resonance: f32, sample_rate: f32) {
+
+        if self.coeff_cutoff == cutoff && self.coeff_resonance == resonance {
+            return;
+        }
+        
+        let total_cutoff = clamp(cutoff, 0.0, sample_rate / 2.0) as f64;
 
         let fc = total_cutoff / sample_rate as f64;
         let f = fc * 0.5; // oversampled
@@ -43,12 +53,16 @@ impl HuovilainenMoog {
 
         self.tune = (1.0 - (-((2.0 * PI) * f * fcr)).exp()) / THERMAL;
 
-        self.res_quad = 4.0 * resonance * self.acr
+        self.res_quad = 4.0 * resonance as f64 * self.acr;
+
+        // Cache the coeffs for the 
+        self.coeff_cutoff = cutoff;
+        self.coeff_resonance = resonance;
     }
 }
 
 impl Filter for HuovilainenMoog {
-    fn process(&mut self, in_sample: f32, sample_rate: f32, cutoff: f64, resonance: f64) -> f32 {
+    fn process(&mut self, in_sample: f32, sample_rate: f32, cutoff: f32, resonance: f32) -> f32 {
         self.compute_coeffs(cutoff, resonance, sample_rate);
 
         // Oversample
@@ -78,6 +92,15 @@ impl Filter for HuovilainenMoog {
     }
 }
 
+#[inline]
 fn tanh(x: f64) -> f64 {
-    x.tanh()
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x5 = x3 * x2;
+    
+    let a = x
+        + (0.16489087 * x3)
+        + (0.00985468 * x5);
+    
+    a / (1.0 + (a * a)).sqrt()
 }

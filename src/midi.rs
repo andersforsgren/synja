@@ -1,12 +1,24 @@
-const A4_PITCH: f64 = 69.0;
-const A4_FREQ: f64 = 440.0;
+const A4_PITCH: f32 = 69.0;
+const A4_FREQ: f32 = 440.0;
 
-pub fn freq_to_midi_pitch(freq: f64) -> f64 {
+#[allow(unused)]
+pub fn freq_to_midi_pitch(freq: f32) -> f32 {
     12.0 * (freq / A4_FREQ).log2() + A4_PITCH
 }
 
-pub fn midi_pitch_to_freq(pitch: f64) -> f64 {
+#[allow(unused)]
+pub fn midi_pitch_to_freq(pitch: f32) -> f32 {
     ((pitch - A4_PITCH) / 12.0).exp2() * A4_FREQ
+}
+
+#[allow(unused)]
+pub fn freq_to_midi_pitch_fast(freq: f32) -> f32 {
+    12.0 * fast_math::log2_raw(freq / A4_FREQ) + A4_PITCH
+}
+
+#[allow(unused)]
+pub fn midi_pitch_to_freq_fast(pitch: f32) -> f32 {
+    (fast_math::exp2(pitch - A4_PITCH) / 12.0) * A4_FREQ
 }
 
 pub fn midi_velocity_to_amplitude(velocity: u8) -> f32 {
