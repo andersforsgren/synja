@@ -185,8 +185,6 @@ pub fn create_editor(
                                                     IndicatorButton::from_get_set(|new_val: Option<bool>| {
                                                         if let Some(v) = new_val {
                                                             setter.set_parameter(&params.poly_mode, v);
-                                                            //start_edit(state, Param::PolyMode);
-                                                            //end_edit(state);
                                                             v
                                                         } else {
                                                             params.poly_mode.value()
@@ -215,7 +213,7 @@ pub fn create_editor(
                                         control_block("OSC1", ui, |ui| {
                                             ui.vertical_centered(|ui| {
                                                 ui.horizontal(|ui| {
-                                                    waveform_button(ui, setter, &params.osc1_waveform, WaveFormParameter::Saw);
+                                                    waveform_button(ui, setter, &params.osc1_waveform, WaveFormParameter::Saw); 
                                                     waveform_button(ui, setter, &params.osc1_waveform, WaveFormParameter::Square);
                                                     waveform_button(ui, setter, &params.osc1_waveform, WaveFormParameter::Sine);
                                                 });
@@ -597,7 +595,6 @@ fn create_param_knob<P>(
         .animated(true);
 
         // Snap
-
         let response = ui.add(knob);
         ui.add_space(8.0);
         ui.add(Label::new(label));

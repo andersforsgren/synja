@@ -117,7 +117,7 @@ impl Voice {
         self.note + self.bend as f32 + detune
     }
 
-    fn frequncy(&mut self, detune_semitones: f32, octave: i32, portamento: f32) -> f32 {
+    fn frequency(&mut self, detune_semitones: f32, octave: i32, portamento: f32) -> f32 {
         // Requires +2 offset                -2    -1    0    1    2
         const OCTIAVE_MULTIPLIER: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
         let octave_multiplier = OCTIAVE_MULTIPLIER[octave as usize + 2];
@@ -213,7 +213,7 @@ impl Voice {
             // Aggregate unison OSC1
             let mut osc1 = (0.0, 0.0);
             for v in 0..nvoices {
-                let f1 = self.frequncy(
+                let f1 = self.frequency(
                     osc1_detune + detune_pattern[v] * unison_detune_semitones + self.bend,
                     osc1_octave,
                     portamento,
@@ -246,7 +246,7 @@ impl Voice {
             let mut osc2 = (0.0f64, 0.0f64);
 
             for v in 0..nvoices {
-                let f2 = self.frequncy(
+                let f2 = self.frequency(
                     osc2_detune + detune_pattern[v] * unison_detune_semitones + self.bend,
                     osc2_octave,
                     portamento,

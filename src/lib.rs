@@ -30,12 +30,12 @@ pub enum EditText {
 }
 
 struct Synth {
-    params: Arc<SynthParams>,
-    prng: Pcg32,
+    params: Arc<SynthParams>,           
+    prng: Pcg32,                    
     voices: Vec<Voice>,
     time: f64,
-    ui_state: Arc<SynthUiState>,
-    env_chg: Arc<AtomicU16>,
+    ui_state: Arc<SynthUiState>,    
+    env_chg: Arc<AtomicU16>,        // Dirty flag for ADSR envelope, per voice (1=dirty, 0=updated)
 }
 
 #[derive(Clone, Copy, PartialEq, Enum)]
@@ -226,9 +226,10 @@ impl SynthParams {
             lfo_freq: FloatParam::new(
                 "LFO Freq",
                 2.0,
-                FloatRange::Linear {
+                FloatRange::Skewed {
                     min: 0.01,
                     max: 20.0,
+                    factor: FloatRange::skew_factor(-1.0)
                 },
             )
             .with_unit("Hz")
@@ -239,13 +240,15 @@ impl SynthParams {
             unison_voices: IntParam::new("Unison Voices", 1, IntRange::Linear { min: 1, max: 7 }),
             unison_detune: FloatParam::new(
                 "Unison Detune",
-                0.0,
+                0.01,
                 FloatRange::Skewed {
                     min: 0.0,
-                    max: 2.0,
-                    factor: 1.0,
+                    max: 1.0,
+                    factor: FloatRange::skew_factor(-2.0),
                 },
-            ),
+            )
+            .with_unit("c")
+            .with_value_to_string(formatters::v2s_f32_percentage(1)),
             unison_stereo_spread: percentage_param("Unison Stereo Spread", 0.5),
             poly_mode: BoolParam::new("Poly", true),
             portamento: FloatParam::new(
@@ -295,14 +298,25 @@ fn env_time_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatPara
             factor: FloatRange::skew_factor(-2.0),
         },
     )
-    .with_step_size(0.01)
-    .with_unit("s")
-    .with_value_to_string(formatters::v2s_f32_rounded(3))
+    .with_step_size(0.001)
+    .with_value_to_string(v2s_f32_ms_then_s(0, 2))
     .with_callback({
+        // Set all voices as needing to update the envelope coefficients.
         let env_chg = env_chg.clone();
-        Arc::new(move |_| env_chg.store(0xFFFF, std::sync::atomic::Ordering::Relaxed))
+        Arc::new(move |_| env_chg.store(u16::MAX, std::sync::atomic::Ordering::Relaxed))
     })
 }
+
+pub fn v2s_f32_ms_then_s(digits_ms: usize, digits_s: usize) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+    Arc::new(move |value| {
+        if value < 1.0 {
+            format!("{:.digits_ms$} ms", value * 1000.0)
+        } else {
+            format!("{value:.digits_s$} s")
+        }
+    })
+}
+
 
 fn env_gain_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatParam {
     FloatParam::new(
@@ -329,7 +343,7 @@ fn freq_param(name: impl Into<String>, default: f32) -> FloatParam {
         FloatRange::Skewed {
             min: 20.0,
             max: 20000.0,
-            factor: 0.5,
+            factor: FloatRange::skew_factor(-2.0),
         },
     )
     .with_unit("Hz")
@@ -340,10 +354,7 @@ fn fine_detune_param(name: impl Into<String>) -> FloatParam {
     FloatParam::new(
         name,
         0.0,
-        FloatRange::Linear {
-            min: -1.0,
-            max: 1.0,
-        },
+        FloatRange::SymmetricalSkewed { min: -1.0, max: 1.0, factor: FloatRange::skew_factor(-1.0), center: 0.0 }, 
     )
     .with_step_size(0.01)
     .with_unit("c")
