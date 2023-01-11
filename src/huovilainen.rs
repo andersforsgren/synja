@@ -36,11 +36,10 @@ impl HuovilainenMoog {
     }
 
     fn compute_coeffs(&mut self, cutoff: f32, resonance: f32, sample_rate: f32) {
-
         if self.coeff_cutoff == cutoff && self.coeff_resonance == resonance {
             return;
         }
-        
+
         let total_cutoff = clamp(cutoff, 0.0, sample_rate / 2.0) as f64;
 
         let fc = total_cutoff / sample_rate as f64;
@@ -55,7 +54,7 @@ impl HuovilainenMoog {
 
         self.res_quad = 4.0 * resonance as f64 * self.acr;
 
-        // Cache the coeffs for the 
+        // Cache the coeffs for the
         self.coeff_cutoff = cutoff;
         self.coeff_resonance = resonance;
     }
@@ -97,10 +96,8 @@ fn tanh(x: f64) -> f64 {
     let x2 = x * x;
     let x3 = x2 * x;
     let x5 = x3 * x2;
-    
-    let a = x
-        + (0.16489087 * x3)
-        + (0.00985468 * x5);
-    
+
+    let a = x + (0.16489087 * x3) + (0.00985468 * x5);
+
     a / (1.0 + (a * a)).sqrt()
 }

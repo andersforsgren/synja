@@ -10,13 +10,14 @@ use editor::{create_editor, frame_history::FrameHistory, SynthUiState};
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, EguiState};
 use oscillator::WaveForm;
+use rand::Rng;
 use rand_pcg::Pcg32;
 use std::{
     borrow::BorrowMut,
-    sync::{Arc, Mutex, atomic::AtomicU16},
+    sync::{atomic::AtomicU16, Arc, Mutex},
     time::SystemTime,
 };
-use voice::Voice;
+use voice::{Voice, MAX_UNISON};
 
 const NUM_VOICES: u32 = 16;
 const MAX_BLOCK_SIZE: usize = 64;
@@ -169,14 +170,16 @@ pub struct SynthParams {
 }
 
 impl Default for Synth {
-    fn default() -> Self {        
+    fn default() -> Self {
         let e = Arc::new(AtomicU16::new(0b1111_1111_1111_1111));
         Self {
             params: Arc::new(SynthParams::new(e.clone())),
             time: 0.0,
             prng: create_rng(),
             env_chg: e.clone(),
-            voices: (0..NUM_VOICES).map(move |i| Voice::new(i as i32, 44100.0, &e.clone())).collect(),
+            voices: (0..NUM_VOICES)
+                .map(move |i| Voice::new(i as i32, 44100.0, &e.clone()))
+                .collect(),
             ui_state: Arc::new(SynthUiState {
                 edit_text: Mutex::new(EditText::None),
                 frame_history: Mutex::new(FrameHistory::default()),
@@ -189,7 +192,7 @@ fn create_rng() -> Pcg32 {
     Pcg32::new(111, 333)
 }
 
-impl  SynthParams {
+impl SynthParams {
     fn new(env_chg: Arc<AtomicU16>) -> Self {
         Self {
             editor_state: editor::default_editor_state(),
@@ -269,10 +272,17 @@ fn percentage_param(name: impl Into<String>, default: f32) -> FloatParam {
 }
 
 fn symmetric_percentage_param(name: impl Into<String>) -> FloatParam {
-    FloatParam::new(name, 0.0, FloatRange::Linear { min: -1.0, max: 1.0 })
-        .with_step_size(0.01)
-        .with_unit("%")
-        .with_value_to_string(formatters::v2s_f32_percentage(1))
+    FloatParam::new(
+        name,
+        0.0,
+        FloatRange::Linear {
+            min: -1.0,
+            max: 1.0,
+        },
+    )
+    .with_step_size(0.01)
+    .with_unit("%")
+    .with_value_to_string(formatters::v2s_f32_percentage(1))
 }
 
 fn env_time_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatParam {
@@ -330,7 +340,10 @@ fn fine_detune_param(name: impl Into<String>) -> FloatParam {
     FloatParam::new(
         name,
         0.0,
-        FloatRange::Linear { min: -1.0, max: 1.0 },
+        FloatRange::Linear {
+            min: -1.0,
+            max: 1.0,
+        },
     )
     .with_step_size(0.01)
     .with_unit("c")
@@ -374,20 +387,21 @@ impl Plugin for Synth {
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         create_editor(self.params.clone(), self.ui_state.clone())
     }
-    
+
     fn initialize(
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
-    ) -> bool {        
-        self.voices = (0..NUM_VOICES).map(|i| Voice::new(i as i32, buffer_config.sample_rate, &self.env_chg)).collect();
+    ) -> bool {
+        self.voices = (0..NUM_VOICES)
+            .map(|i| Voice::new(i as i32, buffer_config.sample_rate, &self.env_chg))
+            .collect();
         true
     }
 
     fn reset(&mut self) {
         self.prng = create_rng();
-        
     }
 
     fn process(
@@ -463,12 +477,7 @@ impl Plugin for Synth {
             output[1][block_start..block_end].fill(0.0);
 
             for voice in self.voices.iter_mut().filter(|v| v.is_playing()) {
-                voice.generate(
-                    self.params.borrow_mut(),
-                    output,
-                    block_start,
-                    block_end,
-                );
+                voice.generate(self.params.borrow_mut(), output, block_start, block_end);
             }
 
             // And then just keep processing blocks until we've run out of buffer to fill
@@ -490,14 +499,22 @@ impl Synth {
         let mut oldest_decaying_time = f64::MAX;
 
         let mono = false;
+
+        let mut phase: [f64; voice::MAX_UNISON] = [0.0; MAX_UNISON];
+
+        // TODO: control whether initial phases are randomized or not.
+        for i in 0..voice::MAX_UNISON {
+            phase[i] = self.prng.gen();
+        }
+
         if mono {
             // Mono: always trig voice 0
-            self.voices[0].note_on(note, velocity, time, unison, lfo_trig);
+            self.voices[0].note_on(note, velocity, time, unison, lfo_trig, &phase);
         } else {
             for i in 0..NUM_VOICES as usize {
                 if !self.voices[i].is_playing() {
                     // Found an idle voice. Use that.
-                    self.voices[i].note_on(note, velocity, time, unison, lfo_trig);
+                    self.voices[i].note_on(note, velocity, time, unison, lfo_trig, &phase);
                     return;
                 } else {
                     if self.voices[i].amp_envelope.is_decaying()
@@ -516,10 +533,9 @@ impl Synth {
 
         // Steal the oldest decaying voice if one exists. Otherwise the oldest playing voice.
         match oldest_decaying_voice {
-            Some(v) => self.voices[v].note_on(note, velocity, time, unison, lfo_trig),
-            None => {
-                self.voices[oldest_playing_voice].note_on(note, velocity, time, unison, lfo_trig)
-            }
+            Some(v) => self.voices[v].note_on(note, velocity, time, unison, lfo_trig, &phase),
+            None => self.voices[oldest_playing_voice]
+                .note_on(note, velocity, time, unison, lfo_trig, &phase),
         }
     }
 

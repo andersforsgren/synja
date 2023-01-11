@@ -1,3 +1,5 @@
+use nih_plug::nih_log;
+
 use crate::envelope::*;
 use crate::filter::Filter;
 use crate::huovilainen::HuovilainenMoog;
@@ -5,9 +7,11 @@ use crate::midi::*;
 use crate::oscillator::*;
 use crate::SynthParams;
 use std::ops::Not;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+pub const MAX_UNISON: usize = 7;
 
 static UNISON_DETUNE_PATTERN: &'static [&[f32]] = &[
     &[],
@@ -40,6 +44,7 @@ pub(crate) struct Voice {
     pub bend: f32,       // bend in semitones
     pub velocity: u8,
     pub start_time: f64,
+    pub unison: usize,
     pub osc1: Vec<Oscillator>,
     pub osc2: Vec<Oscillator>,
     pub lfo: Oscillator,
@@ -59,8 +64,9 @@ impl Voice {
             bend: 0.0,
             velocity: 0,
             start_time: 0.0,
-            osc1: vec![],
-            osc2: vec![],
+            unison: 1,
+            osc1: (0..MAX_UNISON).map(|_| Oscillator::new()).collect(),
+            osc2: (0..MAX_UNISON).map(|_| Oscillator::new()).collect(),
             lfo: Oscillator::new(),
             filter: (HuovilainenMoog::new(), HuovilainenMoog::new()),
             env_change: env_chg.clone(),
@@ -69,15 +75,23 @@ impl Voice {
         }
     }
 
-    pub fn note_on(&mut self, note: u8, velocity: u8, time: f64, unison: usize, lfo_trig: bool) {
-        if self.osc1.len() != unison {
-            self.osc1 = (0..unison).map(|_| Oscillator::new()).collect();
-            self.osc2 = (0..unison).map(|_| Oscillator::new()).collect();
+    pub fn note_on(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        time: f64,
+        unison: usize,
+        lfo_trig: bool,
+        start_phases: &[f64; MAX_UNISON],
+    ) {
+        for i in 0..MAX_UNISON {
+            self.osc1[i].set_phase(start_phases[i]);
         }
         self.target_note = note;
         if lfo_trig {
             self.lfo.trig();
         }
+        self.unison = unison;
         self.velocity = velocity;
         self.start_time = time;
         self.amp_envelope.gate_on();
@@ -103,15 +117,13 @@ impl Voice {
         self.note + self.bend as f32 + detune
     }
 
-  
-
     fn frequncy(&mut self, detune_semitones: f32, octave: i32, portamento: f32) -> f32 {
-        // Requires +2 offset                -2    -1    0    1    2                        
+        // Requires +2 offset                -2    -1    0    1    2
         const OCTIAVE_MULTIPLIER: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
-        let octave_multiplier = OCTIAVE_MULTIPLIER[octave as usize + 2]; //2.0f64.powf(octave as f64);
+        let octave_multiplier = OCTIAVE_MULTIPLIER[octave as usize + 2];
 
         let semitone = self.get_oscillator_semitone(detune_semitones, portamento);
-        
+
         midi_pitch_to_freq(semitone) * octave_multiplier
     }
 
@@ -145,7 +157,7 @@ impl Voice {
 
         // Only update the envelopes if an envelope parameter has changed, and this particular voice has not.
         let bit = 1u16 << (self.id as u16);
-        if self.env_change.fetch_and(bit.not(), Ordering::Relaxed) & bit == bit {        
+        if self.env_change.fetch_and(bit.not(), Ordering::Relaxed) & bit == bit {
             self.amp_envelope.set_envelope_parameters(
                 self.sample_rate,
                 params.amp_env_attack.value(),
@@ -164,7 +176,8 @@ impl Voice {
 
         const KEYTRACK_PIVOT_NOTE: f64 = 48.0; // C3
 
-        let nvoices = self.osc1.len();
+        let nvoices = self.unison;
+        nih_log!("Nvoices {}", nvoices);
         let unison_scale = 1.0;
         let detune_pattern = UNISON_DETUNE_PATTERN[nvoices];
         let spread_pattern = UNISON_SPREAD_PATTERN[nvoices];
@@ -208,7 +221,7 @@ impl Voice {
                 let mono_sample = self.osc1[v].generate(
                     osc1_waveform,
                     f1 as f64,
-          (amp * params.osc1_level.smoothed.next()) as f64,
+                    (amp * params.osc1_level.smoothed.next()) as f64,
                     osc1_modulated_pw,
                     self.sample_rate,
                 );
@@ -280,14 +293,18 @@ impl Voice {
             let master = params.master_gain.smoothed.next();
 
             let resonance = params.fiter_resonance.smoothed.next();
-            let filtered_sample_l =
-                self.filter
-                    .0
-                    .process(sample.0 as f32, self.sample_rate, modulated_cutoff, resonance);
-            let filtered_sample_r =
-                self.filter
-                    .1
-                    .process(sample.1 as f32, self.sample_rate, modulated_cutoff, resonance);
+            let filtered_sample_l = self.filter.0.process(
+                sample.0 as f32,
+                self.sample_rate,
+                modulated_cutoff,
+                resonance,
+            );
+            let filtered_sample_r = self.filter.1.process(
+                sample.1 as f32,
+                self.sample_rate,
+                modulated_cutoff,
+                resonance,
+            );
             let amp_sample = (
                 filtered_sample_l * amp_env * master,
                 filtered_sample_r * amp_env * master,

@@ -1,5 +1,3 @@
-use rand::Rng;
-
 use crate::blep::{BLEPDATA, BLEPLEN, KTABLE};
 use std::f64::consts::PI;
 
@@ -28,11 +26,15 @@ pub enum WaveForm {
 impl Oscillator {
     pub fn new() -> Self {
         Oscillator {
-            phase: rand::thread_rng().gen(),
+            phase: 0.0,
             buffer: [0.0f32; BLEPLEN / KTABLE],
             i_buffer: 0,
             n_init: 0,
         }
+    }
+
+    pub fn set_phase(&mut self, phase: f64) {
+        self.phase = phase;
     }
 
     // Offset: where in the phase the discontinuity occurs. E.g. 0.25 = a quarter of the way into the phase.

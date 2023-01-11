@@ -73,7 +73,7 @@ pub fn create_editor(
                                             EditText::Editing(s, _) => s,
                                             _ => "",
                                         };
-                                        
+
                                         /*  TODO: Presets not implemented in VST3 / nih-plug version
                                         let (preset_index, preset_name) = (0, "".to_owned()); {
                                             let preset_index = state.ui_state.preset_index;
@@ -203,7 +203,7 @@ pub fn create_editor(
                                                     setter,
                                                     &params.portamento,
                                                     &ui_state,
-                                                    !params.poly_mode.value(),                                                    
+                                                    !params.poly_mode.value(),
                                                     false,
                                                 );
                                             });
@@ -568,8 +568,8 @@ fn create_param_knob<P>(
     P: Param,
 {
     ui.vertical_centered(|ui| {
-        let knob_range = if symmetric { -0.5..=0.5 } else { 0.0..=1.0 };        
-        let offset = if symmetric { -0.5 } else { 0.0 }; // Offset between normalized value and knob value. 
+        let knob_range = if symmetric { -0.5..=0.5 } else { 0.0..=1.0 };
+        let offset = if symmetric { -0.5 } else { 0.0 }; // Offset between normalized value and knob value.
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
         let knob = AudioKnob::from_get_set(|new_val: Option<f32>| {
