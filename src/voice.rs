@@ -1,11 +1,10 @@
-use nih_plug::nih_log;
-
 use crate::envelope::*;
 use crate::filter::Filter;
 use crate::huovilainen::HuovilainenMoog;
 use crate::midi::*;
 use crate::oscillator::*;
 use crate::SynthParams;
+use crate::MAX_BLOCK_SIZE;
 use std::ops::Not;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
@@ -145,15 +144,16 @@ impl Voice {
 
         self.bend = 0.0; // states[STATE_BEND].get(); // TODO: Add pitch bend after switch to nih
 
+        // These modulation depths should probably be smoothed at some point
+        let osc1_lfo_pitch_mod_depth_semitones: f32 = params.lfo_osc1_detune_mod_depth.value();
+        let filter_lfo_mod_depth: f32 = params.lfo_filter_mod_depth.value();
+        let filter_velocity_mod_depth: f32 = params.filter_velocity_mod.value();
+
         let portamento: f32 = if params.poly_mode.value() {
             0.0
         } else {
             params.portamento.value() * (self.sample_rate / 44100.0)
         };
-        let osc1_lfo_pitch_mod_depth_semitones: f32 =
-            params.lfo_osc1_detune_mod_depth.smoothed.next();
-        let filter_lfo_mod_depth: f32 = params.lfo_filter_mod_depth.smoothed.next();
-        let filter_velocity_mod_depth: f32 = params.filter_velocity_mod.smoothed.next();
 
         // Only update the envelopes if an envelope parameter has changed, and this particular voice has not.
         let bit = 1u16 << (self.id as u16);
@@ -177,18 +177,67 @@ impl Voice {
         const KEYTRACK_PIVOT_NOTE: f64 = 48.0; // C3
 
         let nvoices = self.unison;
-        nih_log!("Nvoices {}", nvoices);
         let unison_scale = 1.0;
         let detune_pattern = UNISON_DETUNE_PATTERN[nvoices];
         let spread_pattern = UNISON_SPREAD_PATTERN[nvoices];
-        for i in block_start..block_end {
-            let base_cutoff = params.filter_cutoff.smoothed.next() as f64;
+
+        let block_len = block_end - block_start;
+
+        // Audio-rate smoothed params into scratch arrays. Can't call next() per voice as they are shared between voices.
+        let mut params_filter_cutoff = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_filter_resonance = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc1_pulsewidth = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc2_pulsewidth = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc1_detune = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc2_detune = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc1_level = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_osc2_level = [0.0f32; MAX_BLOCK_SIZE];
+        let mut params_master_gain = [0.0f32; MAX_BLOCK_SIZE];
+        params
+            .filter_cutoff
+            .smoothed
+            .next_block(&mut params_filter_cutoff, block_len);
+        params
+            .filter_resonance
+            .smoothed
+            .next_block(&mut params_filter_resonance, block_len);
+        params
+            .osc1_pulsewidth
+            .smoothed
+            .next_block(&mut params_osc1_pulsewidth, block_len);
+        params
+            .osc2_pulsewidth
+            .smoothed
+            .next_block(&mut params_osc2_pulsewidth, block_len);
+        params
+            .osc1_level
+            .smoothed
+            .next_block(&mut params_osc1_level, block_len);
+        params
+            .osc2_level
+            .smoothed
+            .next_block(&mut params_osc2_level, block_len);
+        params
+            .osc1_detune
+            .smoothed
+            .next_block(&mut params_osc1_detune, block_len);
+        params
+            .osc2_detune
+            .smoothed
+            .next_block(&mut params_osc2_detune, block_len);
+        params
+            .master_gain
+            .smoothed
+            .next_block(&mut params_master_gain, block_len);
+
+        for i in 0..block_len {
+            let base_cutoff = params_filter_cutoff[i];
 
             // Do the filter key tracking in semitones
             let base_cutoff_semitone = freq_to_midi_pitch(base_cutoff as f32);
             let cutoff_semitone = base_cutoff_semitone
                 + (self.get_oscillator_semitone(0.0, portamento) - KEYTRACK_PIVOT_NOTE as f32)
-                    * params.filter_key_track.smoothed.next();
+                    * params.filter_key_track.value();
 
             let lfo = self.lfo.generate(
                 lfo_waveform,
@@ -200,28 +249,24 @@ impl Voice {
 
             let osc1_lfo_detune = osc1_lfo_pitch_mod_depth_semitones * lfo;
 
-            let osc1_modulated_pw = params.osc1_pulsewidth.smoothed.next();
-            let osc2_modulated_pw = params.osc2_pulsewidth.smoothed.next();
+            let osc1_modulated_pw = params_osc1_pulsewidth[i];
+            let osc2_modulated_pw = params_osc2_pulsewidth[i];
             let amp = self.note_amplitude() as f32;
 
-            let osc1_octave = params.osc1_octave.value();
-            let osc1_detune = params.osc1_detune.smoothed.next() + osc1_lfo_detune;
-
-            let unison_detune_semitones = params.unison_detune.value();
-            let unison_stereo_spread = params.unison_stereo_spread.value();
+            let osc1_detune = params_osc1_detune[i] + osc1_lfo_detune;
 
             // Aggregate unison OSC1
             let mut osc1 = (0.0, 0.0);
             for v in 0..nvoices {
                 let f1 = self.frequency(
-                    osc1_detune + detune_pattern[v] * unison_detune_semitones + self.bend,
-                    osc1_octave,
+                    osc1_detune + detune_pattern[v] * params.unison_detune.value() + self.bend,
+                    params.osc1_octave.value(),
                     portamento,
                 );
                 let mono_sample = self.osc1[v].generate(
                     osc1_waveform,
                     f1 as f64,
-                    (amp * params.osc1_level.smoothed.next()) as f64,
+                    (amp * params_osc1_level[i]) as f64,
                     osc1_modulated_pw,
                     self.sample_rate,
                 );
@@ -229,8 +274,8 @@ impl Voice {
                 if nvoices == 1 {
                     osc1 = (osc1.0 + mono_sample, osc1.1 + mono_sample);
                 } else {
-                    let left_amp = 1.0 - unison_stereo_spread * spread_pattern[v];
-                    let right_amp = 1.0 + unison_stereo_spread * spread_pattern[v];
+                    let left_amp = 1.0 - params.unison_stereo_spread.value() * spread_pattern[v];
+                    let right_amp = 1.0 + params.unison_stereo_spread.value() * spread_pattern[v];
                     osc1 = (
                         osc1.0 + mono_sample * left_amp as f64,
                         osc1.1 + mono_sample * right_amp as f64,
@@ -238,23 +283,21 @@ impl Voice {
                 }
             }
 
-            // Octave and detune of OSC2 center freq from params/modulation
-            let osc2_octave = params.osc2_octave.value();
-            let osc2_detune = params.osc2_detune.value();
+            let osc2_detune = params_osc2_detune[i];
 
             // Aggregate unison OSC2
             let mut osc2 = (0.0f64, 0.0f64);
 
             for v in 0..nvoices {
                 let f2 = self.frequency(
-                    osc2_detune + detune_pattern[v] * unison_detune_semitones + self.bend,
-                    osc2_octave,
+                    osc2_detune + detune_pattern[v] * params.unison_detune.value() + self.bend,
+                    params.osc2_octave.value(),
                     portamento,
                 );
                 let mono_sample = self.osc2[v].generate(
                     osc2_waveform,
                     f2 as f64,
-                    (amp * params.osc2_level.smoothed.next()) as f64,
+                    (amp * params_osc2_level[i]) as f64,
                     osc2_modulated_pw,
                     self.sample_rate,
                 );
@@ -262,8 +305,8 @@ impl Voice {
                 if nvoices == 1 {
                     osc2 = (osc2.0 + mono_sample, osc2.1 + mono_sample);
                 } else {
-                    let left_amp = 1.0 - unison_stereo_spread * spread_pattern[v];
-                    let right_amp = 1.0 + unison_stereo_spread * spread_pattern[v];
+                    let left_amp = 1.0 - params.unison_stereo_spread.value() * spread_pattern[v];
+                    let right_amp = 1.0 + params.unison_stereo_spread.value() * spread_pattern[v];
                     osc2 = (
                         osc2.0 + mono_sample * left_amp as f64,
                         osc2.1 + mono_sample * right_amp as f64,
@@ -276,7 +319,7 @@ impl Voice {
 
             let amp_env = self.amp_envelope.next();
             let filter_env = self.filter_envelope.next();
-            let filter_env_mod_depth = params.filter_env_mod_gain.smoothed.next();
+            let filter_env_mod_depth = params.filter_env_mod_gain.value();
 
             let sample = (osc1.0 + osc2.0, osc1.1 + osc2.1);
 
@@ -290,9 +333,9 @@ impl Voice {
             let modulated_cutoff =
                 midi_pitch_to_freq(cutoff_semitone + cutoff_mod_semitones).clamp(20.0, 20000.0);
 
-            let master = params.master_gain.smoothed.next();
+            let master = params_master_gain[i];
 
-            let resonance = params.fiter_resonance.smoothed.next();
+            let resonance = params_filter_resonance[i];
             let filtered_sample_l = self.filter.0.process(
                 sample.0 as f32,
                 self.sample_rate,
@@ -310,8 +353,8 @@ impl Voice {
                 filtered_sample_r * amp_env * master,
             );
 
-            output[0][i] += amp_sample.0;
-            output[1][i] += amp_sample.1;
+            output[0][block_start + i] += amp_sample.0;
+            output[1][block_start + i] += amp_sample.1;
         }
     }
 }

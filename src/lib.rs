@@ -30,12 +30,12 @@ pub enum EditText {
 }
 
 struct Synth {
-    params: Arc<SynthParams>,           
-    prng: Pcg32,                    
+    params: Arc<SynthParams>,
+    prng: Pcg32,
     voices: Vec<Voice>,
     time: f64,
-    ui_state: Arc<SynthUiState>,    
-    env_chg: Arc<AtomicU16>,        // Dirty flag for ADSR envelope, per voice (1=dirty, 0=updated)
+    ui_state: Arc<SynthUiState>,
+    env_chg: Arc<AtomicU16>, // Dirty flag for ADSR envelope, per voice (1=dirty, 0=updated)
 }
 
 #[derive(Clone, Copy, PartialEq, Enum)]
@@ -87,7 +87,7 @@ pub struct SynthParams {
     #[id = "FilterCutoff"]
     filter_cutoff: FloatParam,
     #[id = "FilterResonance"]
-    fiter_resonance: FloatParam,
+    filter_resonance: FloatParam,
     #[id = "FilterEnvModGain"]
     filter_env_mod_gain: FloatParam,
     #[id = "FilterKeyTrack"]
@@ -207,7 +207,7 @@ impl SynthParams {
             filter_env_decay: env_time_param("Filter Decay", env_chg.clone()),
             filter_env_release: env_time_param("Filter Release", env_chg.clone()),
             filter_env_sustain: env_gain_param("Filter Sustain", env_chg.clone()),
-            fiter_resonance: percentage_param("Filter Resonance", 0.1),
+            filter_resonance: percentage_param("Filter Resonance", 0.1),
             filter_env_mod_gain: symmetric_percentage_param("Filter env mod"),
             filter_key_track: percentage_param("Key track", 0.1),
             filter_velocity_mod: percentage_param("Filter Vel", 0.1),
@@ -229,7 +229,7 @@ impl SynthParams {
                 FloatRange::Skewed {
                     min: 0.01,
                     max: 20.0,
-                    factor: FloatRange::skew_factor(-1.0)
+                    factor: FloatRange::skew_factor(-1.0),
                 },
             )
             .with_unit("Hz")
@@ -307,7 +307,10 @@ fn env_time_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatPara
     })
 }
 
-pub fn v2s_f32_ms_then_s(digits_ms: usize, digits_s: usize) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+pub fn v2s_f32_ms_then_s(
+    digits_ms: usize,
+    digits_s: usize,
+) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
     Arc::new(move |value| {
         if value < 1.0 {
             format!("{:.digits_ms$} ms", value * 1000.0)
@@ -316,7 +319,6 @@ pub fn v2s_f32_ms_then_s(digits_ms: usize, digits_s: usize) -> Arc<dyn Fn(f32) -
         }
     })
 }
-
 
 fn env_gain_param(name: impl Into<String>, env_chg: Arc<AtomicU16>) -> FloatParam {
     FloatParam::new(
@@ -354,7 +356,12 @@ fn fine_detune_param(name: impl Into<String>) -> FloatParam {
     FloatParam::new(
         name,
         0.0,
-        FloatRange::SymmetricalSkewed { min: -1.0, max: 1.0, factor: FloatRange::skew_factor(-1.0), center: 0.0 }, 
+        FloatRange::SymmetricalSkewed {
+            min: -1.0,
+            max: 1.0,
+            factor: FloatRange::skew_factor(-1.0),
+            center: 0.0,
+        },
     )
     .with_step_size(0.01)
     .with_unit("c")

@@ -370,7 +370,7 @@ pub fn create_editor(
                                                                             param_knob("Cutoff", ui, setter, &params.filter_cutoff, &ui_state);
                                                                         });
                                                                         strip.cell(|ui| {
-                                                                            param_knob("Res", ui, setter, &params.fiter_resonance, &ui_state);
+                                                                            param_knob("Res", ui, setter, &params.filter_resonance, &ui_state);
                                                                         });
                                                                     }); // End cutoff/resonance
                                                             });
