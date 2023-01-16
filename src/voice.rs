@@ -155,7 +155,7 @@ impl Voice {
             params.portamento.value() * (self.sample_rate / 44100.0)
         };
 
-        // Only update the envelopes if an envelope parameter has changed, and this particular voice has not.
+        // Only update the envelopes if an envelope parameter has changed, and this particular voice has not updated since.
         let bit = 1u16 << (self.id as u16);
         if self.env_change.fetch_and(bit.not(), Ordering::Relaxed) & bit == bit {
             self.amp_envelope.set_envelope_parameters(
@@ -183,7 +183,7 @@ impl Voice {
 
         let block_len = block_end - block_start;
 
-        // Audio-rate smoothed params into scratch arrays. Can't call next() per voice as they are shared between voices.
+        // Audio-rate smoothed params into scratch arrays (Can't call next() per voice as they are shared between voices).
         let mut params_filter_cutoff = [0.0f32; MAX_BLOCK_SIZE];
         let mut params_filter_resonance = [0.0f32; MAX_BLOCK_SIZE];
         let mut params_osc1_pulsewidth = [0.0f32; MAX_BLOCK_SIZE];
@@ -234,7 +234,7 @@ impl Voice {
             let base_cutoff = params_filter_cutoff[i];
 
             // Do the filter key tracking in semitones
-            let base_cutoff_semitone = freq_to_midi_pitch(base_cutoff as f32);
+            let base_cutoff_semitone: f32 = freq_to_midi_pitch_fast(base_cutoff as f32);
             let cutoff_semitone = base_cutoff_semitone
                 + (self.get_oscillator_semitone(0.0, portamento) - KEYTRACK_PIVOT_NOTE as f32)
                     * params.filter_key_track.value();

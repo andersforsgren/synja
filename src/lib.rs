@@ -1,3 +1,4 @@
+#![feature(once_cell)]
 mod blep;
 mod editor;
 mod envelope;
@@ -348,6 +349,7 @@ fn freq_param(name: impl Into<String>, default: f32) -> FloatParam {
             factor: FloatRange::skew_factor(-2.0),
         },
     )
+    .with_smoother(SmoothingStyle::Logarithmic(50.0))
     .with_unit("Hz")
     .with_value_to_string(formatters::v2s_f32_rounded(0))
 }
